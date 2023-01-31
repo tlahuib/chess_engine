@@ -14,6 +14,7 @@ class piece:
 class king(piece):
     def __init__(self, position: np.array, color: bool):
         super().__init__(position, color)
+        self.has_moved = False
         self.moves = np.array([
             [[0, 1]],  # Front
             [[1, 1]],  # Front-right
@@ -55,6 +56,7 @@ class bishop(piece):
 class rook(piece):
     def __init__(self, position: np.array, color: bool, b_size=[8, 8]):
         super().__init__(position, color)
+        self.has_moved = False
         self.moves = np.array([
             [[0, i] for i in range(1, b_size[1])],  # Front
             [[i, 0] for i in range(1, b_size[0])],  # Right
@@ -170,7 +172,6 @@ class board:
 
     def possible_moves(self, str_piece: str):
         # TODO:
-        #   - Castle
         #   - Restrict movement in check
         if str_piece in set(self.possible_moves_dict.keys()):
             return self.possible_moves_dict[str_piece]
@@ -178,25 +179,27 @@ class board:
         # Get piece from correct color
         try:
             if self.turn:
-                piece2move = self.black[str_piece]
+                color = self.black
                 opponent = self.white
+                prefix = 'b'
                 front = -1
             else:
-                piece2move = self.white[str_piece]
+                color = self.white
                 opponent = self.black
+                prefix = 'w'
                 front = 1
         except KeyError:
             print(f'Piece {str_piece} not found on the board')
-        piece_name = piece2move.__class__.__name__
+        piece_name = color[str_piece].__class__.__name__
 
         # Account for piece blocking
-        moves = piece2move.moves + piece2move.position
+        moves = color[str_piece].moves + color[str_piece].position
         possible_moves = []
         if piece_name != 'knight':
             for direction in moves:
                 for move in direction.tolist():
                     if str(move) in self.positions:
-                        if self.turn ^ (self.positions[str(move)] == 'b'):
+                        if self.positions[str(move)][0] != prefix:
                             possible_moves.append(move)
                             break
                         else:
@@ -204,7 +207,7 @@ class board:
                     possible_moves.append(move)
         else:
             for move in moves.tolist():
-                if str(move) in self.positions and not self.turn ^ (self.positions[str(move)] == 'b'):
+                if str(move) in self.positions and self.positions[str(move)][0] == prefix:
                     continue
                 possible_moves.append(move)
 
@@ -212,24 +215,33 @@ class board:
         if piece_name in {'initial_pawn', 'pawn'}:
             # Capture Diagonally
             captures = set(self.positions.keys()).intersection(
-                    {str(item) for item in ([[1, front], [-1, front]] + piece2move.position).tolist()}
+                    {str(item) for item in ([[1, front], [-1, front]] + color[str_piece].position).tolist()}
             )
             captures = [[int(n) for n in re.sub('[\[\]]', '', item).split(', ')] for item in captures]
             if captures: possible_moves += captures
 
             # Can't capture directly in front
-            front_move = (piece2move.position + [0, front]).tolist()
+            front_move = (color[str_piece].position + [0, front]).tolist()
             if str(front_move) in self.positions: 
                 possible_moves = [item for item in possible_moves if item != front_move]
 
             # En Passant
             try:
-                if (self.en_passant[1] - piece2move.position).tolist() in [[-1, front], [1, front]]:
+                if (self.en_passant[1] - color[str_piece].position).tolist() in [[-1, front], [1, front]]:
                     possible_moves.append(self.en_passant[1].tolist())
             except AttributeError:
                 pass
 
+        if piece_name == 'king':
+            # Castle long
+            long_line = {str([i, color[str_piece].position[1]]) for i in range(1, 4)}
+            if not color[str_piece].has_moved and not color['1R'].has_moved and not long_line.intersection(set(self.positions.keys())):
+                possible_moves.append([2, color[str_piece].position[1]])
 
+            # Castle short
+            short_line = {str([i, color[str_piece].position[1]]) for i in range(5, 7)}
+            if not color[str_piece].has_moved and not color['2R'].has_moved and not short_line.intersection(set(self.positions.keys())):
+                possible_moves.append([6, color[str_piece].position[1]])
 
         # Limit moves to board boundaries
         possible_moves = np.array(possible_moves)
@@ -257,6 +269,7 @@ class board:
                 opponent = self.black
                 prefix = 'w'
                 front = 1
+            piece_name = color[str_piece].__class__.__name__
 
             # Delete piece if captured
             if str(move) in self.positions:
@@ -273,10 +286,29 @@ class board:
                 del self.en_passant
             except AttributeError:
                 pass
-            if color[str_piece].__class__.__name__ == 'initial_pawn':
+
+            if piece_name == 'initial_pawn':
                 color[str_piece] = pawn(color[str_piece].position, color[str_piece].color)
+
+                # En Passant
                 if abs(move[1] - color[str_piece].position[1]) == 2: 
                     self.en_passant = [str_piece, np.array([move[0], move[1] - front])]
+
+            if piece_name == 'king':
+                # Castle
+                if abs(move[0] - color[str_piece].position[0]) == 2:
+                    # Long side
+                    if move[0] == 2:
+                        self.positions.pop(f'[0, {color[str_piece].position[1]}]')
+                        self.positions[f'[3, {color[str_piece].position[1]}]'] = prefix + '1R'
+                        color['1R'].position = np.array([3, color[str_piece].position[1]])
+
+                    # Short side
+                    if move[0] == 6:
+                        self.positions.pop(f'[7, {color[str_piece].position[1]}]')
+                        self.positions[f'[5, {color[str_piece].position[1]}]'] = prefix + '2R'
+                        color['2R'].position = np.array([5, color[str_piece].position[1]])
+
             
             # Update position in board
             self.positions.pop(str(color[str_piece].position.tolist()))
@@ -292,12 +324,22 @@ class board:
 
 if __name__ == '__main__':
     game = board()
-    game.move_piece('3p', [2, 3])
-    game.move_piece('2p', [1, 4])
-    game.move_piece('2p', [1, 3])
-    game.move_piece('2p', [2, 3])
-    game.move_piece('2p', [1, 4])
-    game.move_piece('1p', [0, 4])
-    game.move_piece('2p', [0, 5])
-    # print(game.possible_moves('2p'))
+    game.move_piece('2N', [5, 2])
+    game.move_piece('2N', [5, 5])
+    game.move_piece('5p', [4, 3])
+    game.move_piece('5p', [4, 4])
+    game.move_piece('7p', [6, 2])
+    game.move_piece('7p', [6, 5])
+    game.move_piece('2B', [6, 1])
+    game.move_piece('2B', [6, 6])
+    game.move_piece('Q', [4, 1])
+    game.move_piece('Q', [4, 6])
+    game.move_piece('2p', [1, 2])
+    game.move_piece('2p', [1, 5])
+    game.move_piece('1N', [2, 2])
+    game.move_piece('1N', [2, 5])
+    game.move_piece('1B', [1, 1])
+    game.move_piece('1B', [1, 6])
+    game.move_piece('K', [2, 0])
+    game.move_piece('K', [4, 6])
     print(game)

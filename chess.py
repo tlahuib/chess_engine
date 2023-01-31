@@ -1,29 +1,14 @@
 import numpy as np
-import json
+import re
 
 
 class piece:
     def __init__(self, position: np.array, color: bool):
         self.name = ''
         self.position = position
-        self.alive = True
         self.color = color  # white = False, black = True
         self.moves = np.array([[0, 0]])
         self.possible_moves = position
-
-    # Move this logic to the board class
-    # def move(self, new_position: list):
-    #     if new_position in self.possible_moves.tolist():
-    #         # Update position
-    #         self.position = np.array(new_position)
-
-    #         # Update possible moves
-    #         self.possible_moves = self.moves + self.position
-    #         self.possible_moves = self.possible_moves[np.where(
-    #             np.apply_along_axis(lambda a: all(a>=0) & all(a<=7), 1, self.possible_moves)
-    #         )]
-    #         return True
-    #     return False
 
 
 class king(piece):
@@ -39,11 +24,6 @@ class king(piece):
             [[-1, 0]],  # Left
             [[-1, 1]]  # Front-left
         ])
-
-        # self.possible_moves = self.moves + self.position
-        # self.possible_moves = self.possible_moves[np.where(
-        #     np.apply_along_axis(lambda a: all(a>=0) & all(a<=7), 1, self.possible_moves)
-        # )]
 
 
 class queen(piece):
@@ -101,8 +81,20 @@ class knight(piece):
 class initial_pawn(piece):
     def __init__(self, position: np.array, color: bool):
         super().__init__(position, color)
+        front = 1
+        if color: front = -1
         self.moves = np.array([
-            [[0, 1], [0, 2]]
+            [[0, front], [0, 2 * front]]
+        ])
+
+
+class pawn(piece):
+    def __init__(self, position: np.array, color: bool):
+        super().__init__(position, color)
+        front = 1
+        if color: front = -1
+        self.moves = np.array([
+            [[0, front]]
         ])
 
 
@@ -177,40 +169,70 @@ class board:
         return s
 
     def possible_moves(self, str_piece: str):
+        # TODO:
+        #   - Castle
+        #   - Restrict movement in check
         if str_piece in set(self.possible_moves_dict.keys()):
             return self.possible_moves_dict[str_piece]
 
-        print(f'Calculating moves for {str_piece}')
         # Get piece from correct color
         try:
             if self.turn:
                 piece2move = self.black[str_piece]
+                opponent = self.white
+                front = -1
             else:
                 piece2move = self.white[str_piece]
+                opponent = self.black
+                front = 1
         except KeyError:
             print(f'Piece {str_piece} not found on the board')
+        piece_name = piece2move.__class__.__name__
 
         # Account for piece blocking
         moves = piece2move.moves + piece2move.position
         possible_moves = []
-        if piece2move.__class__.__name__ != 'knight':
+        if piece_name != 'knight':
             for direction in moves:
-                for move in direction:
-                    if str(move.tolist()) in self.positions:
-                        if self.turn ^ (self.positions[str(move.tolist())] == 'b'):
+                for move in direction.tolist():
+                    if str(move) in self.positions:
+                        if self.turn ^ (self.positions[str(move)] == 'b'):
                             possible_moves.append(move)
                             break
                         else:
                             break
                     possible_moves.append(move)
         else:
-            for move in moves:
-                if str(move.tolist()) in self.positions and not self.turn ^ (self.positions[str(move.tolist())] == 'b'):
+            for move in moves.tolist():
+                if str(move) in self.positions and not self.turn ^ (self.positions[str(move)] == 'b'):
                     continue
                 possible_moves.append(move)
-        possible_moves = np.array(possible_moves)
+
+        # Special moves
+        if piece_name in {'initial_pawn', 'pawn'}:
+            # Capture Diagonally
+            captures = set(self.positions.keys()).intersection(
+                    {str(item) for item in ([[1, front], [-1, front]] + piece2move.position).tolist()}
+            )
+            captures = [[int(n) for n in re.sub('[\[\]]', '', item).split(', ')] for item in captures]
+            if captures: possible_moves += captures
+
+            # Can't capture directly in front
+            front_move = (piece2move.position + [0, front]).tolist()
+            if str(front_move) in self.positions: 
+                possible_moves = [item for item in possible_moves if item != front_move]
+
+            # En Passant
+            try:
+                if (self.en_passant[1] - piece2move.position).tolist() in [[-1, front], [1, front]]:
+                    possible_moves.append(self.en_passant[1].tolist())
+            except AttributeError:
+                pass
+
+
 
         # Limit moves to board boundaries
+        possible_moves = np.array(possible_moves)
         possible_moves = possible_moves[np.where(
             np.apply_along_axis(
                 lambda a: (all(a >= 0)) & (
@@ -223,7 +245,59 @@ class board:
         return possible_moves
 
 
+    def move_piece(self, str_piece: str, move: list):
+        if move in self.possible_moves(str_piece).tolist():
+            if self.turn:
+                color = self.black
+                opponent = self.white
+                prefix = 'b'
+                front = -1
+            else:
+                color = self.white
+                opponent = self.black
+                prefix = 'w'
+                front = 1
+
+            # Delete piece if captured
+            if str(move) in self.positions:
+                opponent.pop(self.positions[str(move)][1:])
+            try:
+                if move == self.en_passant[1].tolist():
+                    self.positions.pop(str(opponent[self.en_passant[0]].position.tolist()))
+                    opponent.pop(self.en_passant[0])
+            except AttributeError:
+                pass
+
+            # Update pieces with special moves
+            try:
+                del self.en_passant
+            except AttributeError:
+                pass
+            if color[str_piece].__class__.__name__ == 'initial_pawn':
+                color[str_piece] = pawn(color[str_piece].position, color[str_piece].color)
+                if abs(move[1] - color[str_piece].position[1]) == 2: 
+                    self.en_passant = [str_piece, np.array([move[0], move[1] - front])]
+            
+            # Update position in board
+            self.positions.pop(str(color[str_piece].position.tolist()))
+            self.positions[str(move)] = prefix + str_piece
+
+            # Update position in piece
+            color[str_piece].position = np.array(move)
+
+            # Update board turns
+            self.turn = ~ self.turn
+            self.possible_moves_dict = {}
+
+
 if __name__ == '__main__':
     game = board()
+    game.move_piece('3p', [2, 3])
+    game.move_piece('2p', [1, 4])
+    game.move_piece('2p', [1, 3])
+    game.move_piece('2p', [2, 3])
+    game.move_piece('2p', [1, 4])
+    game.move_piece('1p', [0, 4])
+    game.move_piece('2p', [0, 5])
+    # print(game.possible_moves('2p'))
     print(game)
-    print(game.possible_moves('1N'))
